@@ -1,0 +1,103 @@
+{
+  "name": "linuxdo-moyu",
+  "displayName": "Linux.do Moyu",
+  "description": "在 VS Code 里浏览 Linux.do（Discourse）论坛的扩展，提供最新帖子、分类、通知与回复能力。",
+  "version": "0.1.0",
+  "publisher": "lucifercoo",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "linuxdo.refresh",
+        "title": "Linux.do: 刷新论坛"
+      },
+      {
+        "command": "linuxdo.configureConnection",
+        "title": "Linux.do: 配置连接"
+      },
+      {
+        "command": "linuxdo.loginWithBrowser",
+        "title": "Linux.do: 使用 Linux DO Connect 登录"
+      },
+      {
+        "command": "linuxdo.clearConnection",
+        "title": "Linux.do: 清除连接"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "linuxdo",
+          "title": "Linux.do",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "linuxdo": [
+        {
+          "type": "webview",
+          "id": "linuxdo.mainView",
+          "name": "Forum"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "linuxdo.refresh",
+          "when": "view == linuxdo.mainView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "linuxdo.configureConnection",
+          "when": "view == linuxdo.mainView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "linuxdo.loginWithBrowser",
+          "when": "view == linuxdo.mainView",
+          "group": "navigation@3"
+        },
+        {
+          "command": "linuxdo.clearConnection",
+          "when": "view == linuxdo.mainView",
+          "group": "navigation@4"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Linux.do Moyu",
+      "properties": {
+        "linuxdo.baseUrl": {
+          "type": "string",
+          "default": "https://linux.do",
+          "description": "Discourse 站点地址，默认使用 https://linux.do。"
+        },
+        "linuxdo.requestTimeoutMs": {
+          "type": "number",
+          "default": 15000,
+          "minimum": 3000,
+          "description": "请求超时时间（毫秒）。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "@types/vscode": "^1.105.0",
+    "typescript": "^5.9.2"
+  }
+}
