@@ -11,7 +11,6 @@ import {
 } from './discourseTypes';
 
 const VIEW_ID = 'linuxdo.mainView';
-const EXTENSION_ID = 'lucifercoo.linuxdo-moyu';
 
 export function activate(context: vscode.ExtensionContext): void {
   let currentView: LinuxDoWebviewProvider | undefined;
@@ -19,7 +18,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const connectionStore = new ConnectionStore(context, () => {
     void currentView?.refresh();
   });
-  const oidcAuthService = new OidcAuthService(connectionStore, EXTENSION_ID);
+  const oidcAuthService = new OidcAuthService(connectionStore);
 
   currentView = new LinuxDoWebviewProvider(context.extensionUri, connectionStore);
 
@@ -36,7 +35,6 @@ export function activate(context: vscode.ExtensionContext): void {
       await configureConnection(connectionStore);
       await currentView?.refresh(true);
     }),
-    vscode.window.registerUriHandler(oidcAuthService),
     vscode.commands.registerCommand('linuxdo.loginWithBrowser', async () => {
       try {
         await oidcAuthService.startLogin();

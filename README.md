@@ -99,7 +99,7 @@ npm run compile
 
 1. 在扩展里点击“使用 Linux DO Connect 登录”。
 2. 扩展会提示一个“回调地址”。
-3. 到 `connect.linux.do` 的“应用接入”页面创建应用，并把这个回调地址填到“回调地址”。
+3. 到 `connect.linux.do` 的“应用接入”页面创建应用，并把这个回调地址填到“回调地址”（当前实现使用本地 HTTP 回环地址）。
 4. 保存应用后拿到：
    - `Client ID`
    - `Client Secret`
@@ -113,7 +113,7 @@ npm run compile
 - 应用名：`linuxdo-moyu`
 - 应用主页：本仓库的 GitHub 地址
 - 应用描述：`一个用于 VS Code 中浏览 Linux.do 的插件`
-- 回调地址：以扩展弹出的值为准
+- 回调地址：以扩展弹出的值为准，形如 `http://127.0.0.1:14565/did-authenticate`
 - 应用图标：可留空，后续再补
 - 最低等级：先按你自己的测试需求选择
 
