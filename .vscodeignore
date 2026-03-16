@@ -1,0 +1,37 @@
+# source and test files
+src/**
+test/**
+out-test/**
+
+# local test resources
+.extest/**
+.vscode-test/**
+
+# development-only config
+.vscode/**
+tsconfig.json
+tsconfig.ui-test.json
+.nvmrc
+
+# repository metadata
+.git/**
+.gitignore
+.cursor/**
+
+# dependencies and package manager files
+node_modules/**
+package-lock.json
+
+# local env and temp files
+.env
+.env.*
+!.env.example
+.DS_Store
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+
+# packaged artifacts
+*.vsix

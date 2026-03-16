@@ -38,6 +38,7 @@ export class ConnectionStore {
         oidcTokenType: parsed.oidcTokenType,
         oidcScope: parsed.oidcScope,
         oidcExpiresAt: parsed.oidcExpiresAt,
+        oidcForumApiEnabled: parsed.oidcForumApiEnabled,
       };
     } catch {
       return {

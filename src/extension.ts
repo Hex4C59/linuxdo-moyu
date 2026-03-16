@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 
 import { OidcAuthService } from './auth/browserAuthService';
+import { BrowserCookieService } from './auth/browserCookieService';
 import { ConnectionStore } from './connectionStore';
 import { DiscourseClient } from './discourseClient';
 import {
@@ -19,6 +20,7 @@ export function activate(context: vscode.ExtensionContext): void {
     void currentView?.refresh();
   });
   const oidcAuthService = new OidcAuthService(connectionStore);
+  const browserCookieService = new BrowserCookieService();
 
   currentView = new LinuxDoWebviewProvider(context.extensionUri, connectionStore);
 
@@ -32,8 +34,18 @@ export function activate(context: vscode.ExtensionContext): void {
       await currentView?.refresh(true);
     }),
     vscode.commands.registerCommand('linuxdo.configureConnection', async () => {
-      await configureConnection(connectionStore);
+      await configureConnection(connectionStore, browserCookieService);
       await currentView?.refresh(true);
+    }),
+    vscode.commands.registerCommand('linuxdo.browserLoginAndImportSession', async () => {
+      try {
+        await browserLoginAndImportSession(connectionStore, browserCookieService);
+        await currentView?.refresh(true);
+      } catch (error) {
+        void vscode.window.showErrorMessage(
+          error instanceof Error ? error.message : '浏览器登录并接管会话失败。',
+        );
+      }
     }),
     vscode.commands.registerCommand('linuxdo.loginWithBrowser', async () => {
       try {
@@ -41,6 +53,16 @@ export function activate(context: vscode.ExtensionContext): void {
       } catch (error) {
         void vscode.window.showErrorMessage(
           error instanceof Error ? error.message : '发起 Linux DO Connect 登录失败。',
+        );
+      }
+    }),
+    vscode.commands.registerCommand('linuxdo.loginWithCookie', async () => {
+      try {
+        await loginWithCookie(connectionStore, browserCookieService);
+        await currentView?.refresh(true);
+      } catch (error) {
+        void vscode.window.showErrorMessage(
+          error instanceof Error ? error.message : '使用 Linux.do Cookie 登录失败。',
         );
       }
     }),
@@ -56,6 +78,9 @@ export function activate(context: vscode.ExtensionContext): void {
         await currentView?.refresh(true);
       }
     }),
+    vscode.commands.registerCommand('linuxdo.__test.setScenario', async (scenario?: TestScenarioName) => {
+      currentView?.applyTestScenario(scenario || 'anonymous');
+    }),
   );
 }
 
@@ -66,6 +91,7 @@ export function deactivate(): void {
 class LinuxDoWebviewProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
   private state: AppState = this.createInitialState();
+  private activeTestScenario?: TestScenarioName;
 
   public constructor(
     private readonly extensionUri: vscode.Uri,
@@ -84,7 +110,10 @@ class LinuxDoWebviewProvider implements vscode.WebviewViewProvider {
       await this.handleMessage(message);
     });
 
-    void this.refresh();
+    this.postState();
+    if (!this.activeTestScenario) {
+      void this.refresh();
+    }
   }
 
   public async refresh(showToast = false): Promise<void> {
@@ -97,45 +126,84 @@ class LinuxDoWebviewProvider implements vscode.WebviewViewProvider {
 
     try {
       const connection = await this.connectionStore.load();
-      const client = new DiscourseClient(connection);
+      let nextConnection = connection;
+      let client = new DiscourseClient(nextConnection);
 
-      const latestTopicsPromise = client.getLatestTopics();
-      const categoriesPromise = client.getCategories();
+      if (
+        nextConnection.authMode === 'oidc'
+        && nextConnection.oidcAccessToken?.trim()
+        && !nextConnection.oidcForumApiEnabled
+      ) {
+        const probedSession = await client.probeOidcForumAccess();
+        if (probedSession?.current_user?.username) {
+          nextConnection = {
+            ...nextConnection,
+            oidcForumApiEnabled: true,
+            username: nextConnection.username ?? probedSession.current_user.username,
+          };
+          await this.connectionStore.save(nextConnection);
+          client = new DiscourseClient(nextConnection);
+        }
+      }
 
-      const capabilities = client.getCapabilities();
-      const sessionPromise = client.isConfigured() && capabilities.canReadSession
-        ? client.getSessionCurrent().catch(() => undefined)
-        : Promise.resolve(undefined);
-
-      const notificationsPromise = client.isConfigured() && capabilities.canReadNotifications
-        ? client.getNotifications().catch(() => [])
-        : Promise.resolve([]);
-
-      const [latestTopics, categories, session, notifications] = await Promise.all([
-        latestTopicsPromise,
-        categoriesPromise,
-        sessionPromise,
-        notificationsPromise,
-      ]);
-
+      const effectiveClient = client;
+      const capabilities = effectiveClient.getCapabilities();
       const selectedCategorySlug = this.state.selectedCategorySlug;
       const selectedCategoryId = this.state.selectedCategoryId;
+      let errorMessage: string | undefined;
+
+      const latestTopics = await effectiveClient.getLatestTopics().catch((error) => {
+        errorMessage = error instanceof Error ? error.message : '加载最新主题失败';
+        return this.state.latestTopics;
+      });
+
+      await sleep(500);
+
+      const categories = await effectiveClient.getCategories().catch((error) => {
+        errorMessage ??= error instanceof Error ? error.message : '加载分类失败';
+        return this.state.categories;
+      });
+
+      await sleep(500);
+
+      const session = effectiveClient.isConfigured() && capabilities.canReadSession
+        ? await effectiveClient.getSessionCurrent().catch((error) => {
+            errorMessage ??= error instanceof Error ? error.message : '读取当前会话失败';
+            return this.state.session;
+          })
+        : undefined;
+
+      await sleep(500);
+
+      const notifications = effectiveClient.isConfigured() && capabilities.canReadNotifications
+        ? await effectiveClient.getNotifications().catch((error) => {
+            errorMessage ??= error instanceof Error ? error.message : '读取通知失败';
+            return this.state.notifications;
+          })
+        : [];
+
       const categoryTopics = selectedCategorySlug
-        ? await client.getCategoryTopics(selectedCategorySlug, selectedCategoryId).catch(() => [])
+        ? await effectiveClient.getCategoryTopics(selectedCategorySlug, selectedCategoryId).catch((error) => {
+            errorMessage ??= error instanceof Error ? error.message : '加载分类主题失败';
+            return this.state.categoryTopics;
+          })
         : [];
 
       let activeTopic = this.state.activeTopic;
       if (activeTopic?.id) {
-        activeTopic = await client.getTopic(activeTopic.id).catch(() => undefined);
+        activeTopic = await effectiveClient.getTopic(activeTopic.id).catch((error) => {
+          errorMessage ??= error instanceof Error ? error.message : '加载帖子详情失败';
+          return this.state.activeTopic;
+        });
       }
 
       this.state = {
         connection: {
-          baseUrl: client.getBaseUrl(),
-          authMode: connection.authMode,
-          configured: client.isConfigured(),
-          username: connection.username ?? session?.current_user?.username,
-          capabilities,
+          baseUrl: effectiveClient.getBaseUrl(),
+          authMode: nextConnection.authMode,
+          configured: effectiveClient.isConfigured(),
+          username: nextConnection.username ?? session?.current_user?.username,
+          capabilities: effectiveClient.getCapabilities(),
         },
         session,
         latestTopics,
@@ -147,6 +215,7 @@ class LinuxDoWebviewProvider implements vscode.WebviewViewProvider {
         activeTopic,
         notifications,
         loading: false,
+        error: errorMessage,
       };
 
       this.postState();
@@ -155,8 +224,20 @@ class LinuxDoWebviewProvider implements vscode.WebviewViewProvider {
         void vscode.window.showInformationMessage('Linux.do 已刷新。');
       }
     } catch (error) {
+      const connection = await this.connectionStore.load().catch(() => undefined);
+      const fallbackClient = connection ? new DiscourseClient(connection) : undefined;
+
       this.state = {
         ...this.state,
+        connection: connection
+          ? {
+              baseUrl: fallbackClient?.getBaseUrl() || connection.baseUrl,
+              authMode: connection.authMode,
+              configured: fallbackClient?.isConfigured() || false,
+              username: connection.username,
+              capabilities: fallbackClient?.getCapabilities() || EMPTY_CONNECTION_CAPABILITIES,
+            }
+          : this.state.connection,
         loading: false,
         error: error instanceof Error ? error.message : '刷新失败',
       };
@@ -170,15 +251,34 @@ class LinuxDoWebviewProvider implements vscode.WebviewViewProvider {
         this.postState();
         return;
       case 'refresh':
+        if (this.activeTestScenario) {
+          this.state = {
+            ...this.state,
+            loading: false,
+            error: undefined,
+          };
+          this.postState();
+          return;
+        }
         await this.refresh();
         return;
       case 'configureConnection':
         await vscode.commands.executeCommand('linuxdo.configureConnection');
         return;
+      case 'browserLoginAndImportSession':
+        await vscode.commands.executeCommand('linuxdo.browserLoginAndImportSession');
+        return;
       case 'loginWithBrowser':
         await vscode.commands.executeCommand('linuxdo.loginWithBrowser');
         return;
+      case 'loginWithCookie':
+        await vscode.commands.executeCommand('linuxdo.loginWithCookie');
+        return;
       case 'clearConnection':
+        if (this.activeTestScenario) {
+          this.applyTestScenario('anonymous');
+          return;
+        }
         await vscode.commands.executeCommand('linuxdo.clearConnection');
         return;
       case 'openTopic':
@@ -192,6 +292,17 @@ class LinuxDoWebviewProvider implements vscode.WebviewViewProvider {
         return;
       case 'replyTopic':
         await this.replyTopic(message.topicId, message.raw, message.replyToPostNumber);
+        return;
+      case 'webviewError':
+        this.state = {
+          ...this.state,
+          loading: false,
+          error: `Webview 脚本错误：${message.message}`,
+        };
+        this.postState();
+        return;
+      case 'webviewBoot':
+        void vscode.window.showInformationMessage('Linux.do Webview 脚本已启动。');
         return;
       default:
         return;
@@ -227,6 +338,30 @@ class LinuxDoWebviewProvider implements vscode.WebviewViewProvider {
   }
 
   private async selectCategory(slug: string, name: string, categoryId?: number): Promise<void> {
+    if (this.activeTestScenario) {
+      this.state = {
+        ...this.state,
+        loading: false,
+        selectedCategorySlug: slug,
+        selectedCategoryId: categoryId,
+        selectedCategoryName: name,
+        categoryTopics: [
+          {
+            id: 202,
+            title: `测试分类主题：${name}`,
+            slug: `test-category-${slug}`,
+            posts_count: 5,
+            views: 88,
+            excerpt: '这是分类切换后的测试主题。',
+            tags: ['category', 'test'],
+          },
+        ],
+        error: undefined,
+      };
+      this.postState();
+      return;
+    }
+
     const connection = await this.connectionStore.load();
     const client = new DiscourseClient(connection);
     this.state = {
@@ -302,6 +437,12 @@ class LinuxDoWebviewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  public applyTestScenario(scenario: TestScenarioName): void {
+    this.activeTestScenario = scenario;
+    this.state = createTestScenarioState(scenario);
+    this.postState();
+  }
+
   private postState(): void {
     this.view?.webview.postMessage({
       type: 'state',
@@ -329,12 +470,13 @@ class LinuxDoWebviewProvider implements vscode.WebviewViewProvider {
   private renderWebview(webview: vscode.Webview): string {
     const nonce = getNonce();
     const cspSource = webview.cspSource;
+    const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'webview.js'));
 
     return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${cspSource} https: data:; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${cspSource} https: data:; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' ${cspSource};" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Linux.do</title>
   <style>
@@ -650,9 +792,16 @@ class LinuxDoWebviewProvider implements vscode.WebviewViewProvider {
   </style>
 </head>
 <body>
+  <div id="boot-sentinel" style="padding:16px;color:var(--text);font-size:13px;">Linux.do Webview 正在启动...</div>
   <div id="app" class="app"></div>
-  <script nonce="${nonce}">
+  <script nonce="${nonce}" src="${scriptUri}">
+    try {
     const vscode = acquireVsCodeApi();
+    const bootSentinel = document.getElementById('boot-sentinel');
+    if (bootSentinel) {
+      bootSentinel.textContent = 'Linux.do Webview 脚本已启动，正在等待数据...';
+    }
+    vscode.postMessage({ type: 'webviewBoot' });
     const state = {
       connection: {
         baseUrl: 'https://linux.do',
@@ -671,6 +820,14 @@ class LinuxDoWebviewProvider implements vscode.WebviewViewProvider {
       loading: true,
     };
 
+    window.addEventListener('error', (event) => {
+      showFatalError(event.error || event.message || '未知脚本错误');
+    });
+
+    window.addEventListener('unhandledrejection', (event) => {
+      showFatalError(event.reason || '未处理的异步异常');
+    });
+
     window.addEventListener('message', (event) => {
       const message = event.data;
       if (message?.type === 'state') {
@@ -679,8 +836,28 @@ class LinuxDoWebviewProvider implements vscode.WebviewViewProvider {
       }
     });
 
+    render();
+
+    function showFatalError(error) {
+      const app = document.getElementById('app');
+      const message = error && error.message ? error.message : String(error || '未知错误');
+      if (!app) return;
+      app.innerHTML = '' +
+        '<section class="status-card">' +
+          '<div class="section-header">' +
+            '<div>' +
+              '<h2 class="section-title">Webview 脚本错误</h2>' +
+              '<div class="section-subtitle">前端渲染失败，错误信息如下。</div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="error">' + escapeHtml(message) + '</div>' +
+        '</section>';
+      vscode.postMessage({ type: 'webviewError', message });
+    }
+
     function render() {
       const app = document.getElementById('app');
+      if (!app) return;
       const activeTopic = state.activeTopic;
       const activeTopicId = activeTopic?.id;
       const notificationHtml = state.notifications.length
@@ -688,8 +865,7 @@ class LinuxDoWebviewProvider implements vscode.WebviewViewProvider {
             const targetUrl = item.topic_id ? buildTopicUrl(item.topic_id, item.post_number, item.slug) : state.connection.baseUrl;
             const title = escapeHtml(item.fancy_title || item.data?.topic_title || '通知');
             const detail = escapeHtml(item.data?.message || item.data?.display_username || '');
-            return 
-              '<div class="topic-card">' +
+            return '<div class="topic-card">' +
                 '<div class="meta">' +
                   '<span>' + escapeHtml(formatDate(item.created_at)) + '</span>' +
                   (item.read ? '<span>已读</span>' : '<span class="badge">未读</span>') +
@@ -711,8 +887,7 @@ class LinuxDoWebviewProvider implements vscode.WebviewViewProvider {
       const categoryHtml = state.categories.length
         ? state.categories.map((category) => {
             const active = state.selectedCategorySlug === category.slug ? 'active' : '';
-            return 
-              '<button class="category-button ' + active + '" data-category-slug="' + encodeAttr(category.slug) + '" data-category-name="' + encodeAttr(category.name) + '" data-category-id="' + category.id + '">' +
+            return '<button class="category-button ' + active + '" data-category-slug="' + encodeAttr(category.slug) + '" data-category-name="' + encodeAttr(category.name) + '" data-category-id="' + category.id + '">' +
                 '<div class="category-name">' + escapeHtml(category.name) + '</div>' +
                 '<div class="category-desc">' + escapeHtml(category.description_text || '') + '</div>' +
                 '<div class="meta">' +
@@ -825,8 +1000,7 @@ class LinuxDoWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     function renderTopicCard(topic) {
-      return 
-        '<article class="topic-card">' +
+      return '<article class="topic-card">' +
           '<div class="meta">' +
             '<span>#' + topic.id + '</span>' +
             (topic.posts_count ? '<span>帖子 ' + topic.posts_count + '</span>' : '') +
@@ -858,8 +1032,7 @@ class LinuxDoWebviewProvider implements vscode.WebviewViewProvider {
         : '<div class="empty">当前还没有可回复的登录会话。你可以点击上面的“使用 Linux DO Connect 登录”，或手动配置其它连接方式。</div>';
 
       const postsHtml = posts.length
-        ? posts.map((post) => 
-            '<article class="post-card">' +
+        ? posts.map((post) => '<article class="post-card">' +
               '<div class="meta">' +
                 '<span>#' + post.post_number + '</span>' +
                 '<span>@' + escapeHtml(post.username) + '</span>' +
@@ -876,8 +1049,7 @@ class LinuxDoWebviewProvider implements vscode.WebviewViewProvider {
           ).join('')
         : '<div class="empty">当前主题没有加载到楼层内容。</div>';
 
-      return 
-        '<article class="topic-card">' +
+      return '<article class="topic-card">' +
           '<h3>' + escapeHtml(topic.fancy_title || topic.title) + '</h3>' +
           '<div class="meta">' +
             (topic.views ? '<span>浏览 ' + topic.views + '</span>' : '') +
@@ -1011,13 +1183,257 @@ class LinuxDoWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     vscode.postMessage({ type: 'ready' });
+    } catch (error) {
+      const app = document.getElementById('app');
+      if (app) {
+        const message = error && error.message ? error.message : String(error || '未知错误');
+        app.innerHTML = '<section class="status-card"><div class="section-header"><div><h2 class="section-title">Webview 初始化错误</h2><div class="section-subtitle">脚本在启动阶段就失败了。</div></div></div><div class="error">' + String(message)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/\"/g, '&quot;')
+          .replace(/'/g, '&#39;') + '</div></section>';
+      }
+    }
   </script>
 </body>
 </html>`;
   }
 }
 
-async function configureConnection(connectionStore: ConnectionStore): Promise<void> {
+async function loginWithCookie(
+  connectionStore: ConnectionStore,
+  browserCookieService: BrowserCookieService,
+): Promise<void> {
+  const current = await connectionStore.load();
+  const baseUrl = current.baseUrl || 'https://linux.do';
+
+  const autoImportAction = '自动读取浏览器 Cookie';
+  const manualPasteAction = '手动粘贴 Cookie';
+  const selection = await vscode.window.showInformationMessage(
+    '你可以直接自动读取浏览器里的 Linux.do Cookie；如果自动读取失败，再手动粘贴。',
+    { modal: true },
+    autoImportAction,
+    manualPasteAction,
+  );
+
+  if (!selection) {
+    return;
+  }
+
+  if (selection === autoImportAction) {
+    await importCookieFromBrowser(connectionStore, browserCookieService, current, baseUrl);
+    return;
+  }
+
+  await promptManualCookie(connectionStore, current, baseUrl);
+}
+
+async function browserLoginAndImportSession(
+  connectionStore: ConnectionStore,
+  browserCookieService: BrowserCookieService,
+): Promise<void> {
+  const current = await connectionStore.load();
+  const baseUrl = current.baseUrl || 'https://linux.do';
+  const loginUrl = new URL('/login', baseUrl).toString();
+  const continueAction = '我已在浏览器登录，开始接管会话';
+  const manualAction = '改为手动粘贴 Cookie';
+
+  await vscode.env.openExternal(vscode.Uri.parse(loginUrl));
+
+  const selection = await vscode.window.showInformationMessage(
+    '系统浏览器已打开 Linux.do 登录页。请先在浏览器完成登录，必要时顺手打开一次首页或帖子页，再回到 VS Code 接管会话。',
+    { modal: true },
+    continueAction,
+    manualAction,
+  );
+
+  if (!selection) {
+    return;
+  }
+
+  if (selection === manualAction) {
+    await promptManualCookie(connectionStore, current, baseUrl);
+    return;
+  }
+
+  await importCookieFromBrowser(connectionStore, browserCookieService, current, baseUrl, {
+    autoPickSingleProfile: true,
+    validateSession: true,
+  });
+}
+
+async function importCookieFromBrowser(
+  connectionStore: ConnectionStore,
+  browserCookieService: BrowserCookieService,
+  current: ConnectionConfig,
+  baseUrl: string,
+  options?: {
+    autoPickSingleProfile?: boolean;
+    validateSession?: boolean;
+  },
+): Promise<void> {
+  const profiles = await browserCookieService.listAvailableProfiles();
+  if (profiles.length === 0) {
+    throw new Error('没有找到可用的 Chromium 系浏览器配置。当前仅支持 macOS 下的 Chrome、Edge、Brave、Arc、Chromium。');
+  }
+
+  const selectedProfile = await pickBrowserProfile(profiles, options?.autoPickSingleProfile === true);
+  if (!selectedProfile) {
+    return;
+  }
+
+  const imported = await browserCookieService.importLinuxDoCookie(selectedProfile);
+  const nextConfig: ConnectionConfig = {
+    baseUrl,
+    authMode: 'cookie',
+    cookie: imported.cookieHeader,
+    username: current.username,
+  };
+
+  const validation = options?.validateSession === true
+    ? await validateImportedCookieSession(nextConfig)
+    : undefined;
+
+  if (validation?.username) {
+    nextConfig.username = validation.username;
+  }
+
+  if (!options?.validateSession) {
+    const username = await vscode.window.showInputBox({
+      title: 'Username（可选）',
+      prompt: '若你知道当前登录用户名，可以填上，便于界面显示。',
+      value: current.username,
+      ignoreFocusOut: true,
+    });
+    nextConfig.username = username;
+  }
+
+  await connectionStore.save(nextConfig);
+
+  const diagnostics: string[] = [];
+  if (!imported.hasSessionCookie) {
+    diagnostics.push('未检测到典型会话 Cookie（如 _t），可能尚未真正登录。');
+  }
+  if (!imported.hasClearanceCookie) {
+    diagnostics.push('未检测到 cf_clearance，若仍被 Cloudflare 拦截，可先在浏览器里访问几次 Linux.do 后再重新导入。');
+  }
+  if (validation && !validation.ok) {
+    diagnostics.push(validation.message);
+  }
+
+  const sessionSummary = validation?.ok
+    ? `已接管会话，当前用户：@${validation.username || nextConfig.username || '未知用户'}。`
+    : 'Cookie 已导入。';
+  const suffix = diagnostics.length > 0 ? ` ${diagnostics.join(' ')}` : '';
+  void vscode.window.showInformationMessage(
+    `已从 ${imported.sourceLabel} 导入 ${imported.cookieCount} 个 Linux.do Cookie。${sessionSummary}${suffix}`,
+  );
+}
+
+async function pickBrowserProfile(
+  profiles: import('./auth/browserCookieService').BrowserCookieProfile[],
+  autoPickSingleProfile: boolean,
+): Promise<import('./auth/browserCookieService').BrowserCookieProfile | undefined> {
+  if (autoPickSingleProfile && profiles.length === 1) {
+    return profiles[0];
+  }
+
+  const pickedProfile = await vscode.window.showQuickPick(
+    profiles.map((profile) => ({
+      label: profile.browserLabel,
+      description: profile.profileLabel,
+      detail: profile.cookieDbPath,
+      profile,
+    })),
+    {
+      title: '选择浏览器配置',
+      placeHolder: '选择要导入 Linux.do Cookie 的浏览器与配置目录',
+      ignoreFocusOut: true,
+    },
+  );
+
+  return pickedProfile?.profile;
+}
+
+async function validateImportedCookieSession(config: ConnectionConfig): Promise<{
+  ok: boolean;
+  username?: string;
+  message: string;
+}> {
+  const client = new DiscourseClient(config);
+
+  try {
+    const session = await client.getSessionCurrent();
+    const username = session.current_user?.username;
+    if (username) {
+      return {
+        ok: true,
+        username,
+        message: 'Session Cookie 已验证通过。',
+      };
+    }
+
+    return {
+      ok: false,
+      message: 'Session Cookie 已导入，但接口没有返回当前用户，可能仍未真正登录。',
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : 'Session Cookie 校验失败。',
+    };
+  }
+}
+
+async function promptManualCookie(
+  connectionStore: ConnectionStore,
+  current: ConnectionConfig,
+  baseUrl: string,
+): Promise<void> {
+  const cookie = await vscode.window.showInputBox({
+    title: 'Session Cookie',
+    prompt: '从浏览器开发者工具或 Cookie 插件复制完整 Cookie 字符串。',
+    password: true,
+    ignoreFocusOut: true,
+    value: current.cookie,
+    validateInput: (value) => {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return 'Cookie 不能为空';
+      }
+      if (!trimmed.includes('=')) {
+        return 'Cookie 格式看起来不对，至少应包含 key=value';
+      }
+      return undefined;
+    },
+  });
+
+  if (!cookie) {
+    return;
+  }
+
+  const username = await vscode.window.showInputBox({
+    title: 'Username（可选）',
+    prompt: '若你知道当前登录用户名，可以填上，便于界面显示。',
+    value: current.username,
+    ignoreFocusOut: true,
+  });
+
+  await connectionStore.save({
+    baseUrl,
+    authMode: 'cookie',
+    cookie,
+    username,
+  });
+
+  void vscode.window.showInformationMessage('Linux.do Cookie 连接已保存。');
+}
+
+async function configureConnection(
+  connectionStore: ConnectionStore,
+  browserCookieService: BrowserCookieService,
+): Promise<void> {
   const current = await connectionStore.load();
 
   const baseUrl = await vscode.window.showInputBox({
@@ -1110,31 +1526,20 @@ async function configureConnection(connectionStore: ConnectionStore): Promise<vo
   }
 
   if (nextConfig.authMode === 'cookie') {
-    const cookie = await vscode.window.showInputBox({
-      title: 'Session Cookie',
-      prompt: '从浏览器复制完整 Cookie 字符串。',
-      password: true,
-      ignoreFocusOut: true,
-      value: current.cookie,
+    await connectionStore.save({
+      ...current,
+      baseUrl,
     });
-
-    if (!cookie) {
-      return;
-    }
-
-    const username = await vscode.window.showInputBox({
-      title: 'Username（可选）',
-      prompt: '若你知道当前登录用户名，可以填上。',
-      value: current.username,
-      ignoreFocusOut: true,
-    });
-
-    nextConfig.cookie = cookie;
-    nextConfig.username = username;
+    await loginWithCookie(connectionStore, browserCookieService);
+    return;
   }
 
   await connectionStore.save(nextConfig);
   void vscode.window.showInformationMessage('Linux.do 连接已保存。');
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function getNonce(): string {
@@ -1150,14 +1555,149 @@ type WebviewMessage =
   | { type: 'ready' }
   | { type: 'refresh' }
   | { type: 'configureConnection' }
+  | { type: 'browserLoginAndImportSession' }
   | { type: 'loginWithBrowser' }
+  | { type: 'loginWithCookie' }
   | { type: 'clearConnection' }
   | { type: 'openTopic'; topicId: number }
   | { type: 'openInBrowser'; url: string }
   | { type: 'selectCategory'; slug: string; name: string; categoryId?: number }
-  | { type: 'replyTopic'; topicId: number; raw: string; replyToPostNumber?: number };
+  | { type: 'replyTopic'; topicId: number; raw: string; replyToPostNumber?: number }
+  | { type: 'webviewError'; message: string }
+  | { type: 'webviewBoot' };
 
 type StateEnvelope = {
   type: 'state';
   payload: AppState;
 };
+
+type TestScenarioName = 'anonymous' | 'cookieConnected' | 'cookieRateLimited' | 'replyReady';
+
+function createTestScenarioState(scenario: TestScenarioName): AppState {
+  const baseState: AppState = {
+    connection: {
+      baseUrl: 'https://linux.do',
+      authMode: 'none',
+      configured: false,
+      capabilities: EMPTY_CONNECTION_CAPABILITIES,
+    },
+    latestTopics: [
+      {
+        id: 101,
+        title: '测试主题：AI 接管 VS Code 插件调试流程',
+        slug: 'test-ai-debug-flow',
+        posts_count: 12,
+        views: 230,
+        last_posted_at: '2026-03-09T10:00:00.000Z',
+        excerpt: '这是一个用于 UI 自动化测试的最新主题示例。',
+        tags: ['test', 'ui'],
+      },
+    ],
+    categories: [
+      {
+        id: 1,
+        name: '开发调试',
+        slug: 'dev-debug',
+        topic_count: 42,
+        post_count: 128,
+        description_text: '用于验证分类区块是否正常渲染。',
+      },
+    ],
+    categoryTopics: [],
+    notifications: [],
+    loading: false,
+  };
+
+  if (scenario === 'anonymous') {
+    return baseState;
+  }
+
+  if (scenario === 'cookieConnected') {
+    return {
+      ...baseState,
+      connection: {
+        baseUrl: 'https://linux.do',
+        authMode: 'cookie',
+        configured: true,
+        username: 'Hex4C59',
+        capabilities: {
+          canReadSession: true,
+          canReadNotifications: true,
+          canReply: true,
+        },
+      },
+      session: {
+        current_user: {
+          username: 'Hex4C59',
+          trust_level: 2,
+        },
+        unread_notifications: 3,
+      },
+      notifications: [
+        {
+          id: 1,
+          read: false,
+          created_at: '2026-03-09T09:30:00.000Z',
+          fancy_title: '测试通知：有人回复了你',
+          topic_id: 101,
+          slug: 'test-ai-debug-flow',
+          data: {
+            message: '这是一条用于 UI 自动化测试的通知。',
+          },
+        },
+      ],
+    };
+  }
+
+  if (scenario === 'cookieRateLimited') {
+    return {
+      ...baseState,
+      connection: {
+        baseUrl: 'https://linux.do',
+        authMode: 'cookie',
+        configured: true,
+        username: 'Hex4C59',
+        capabilities: {
+          canReadSession: true,
+          canReadNotifications: true,
+          canReply: true,
+        },
+      },
+      error: '请求过于频繁（HTTP 429）。插件已自动做过一次重试。',
+    };
+  }
+
+  return {
+    ...baseState,
+    connection: {
+      baseUrl: 'https://linux.do',
+      authMode: 'cookie',
+      configured: true,
+      username: 'Hex4C59',
+      capabilities: {
+        canReadSession: true,
+        canReadNotifications: true,
+        canReply: true,
+      },
+    },
+    activeTopic: {
+      id: 101,
+      title: '测试主题：AI 接管 VS Code 插件调试流程',
+      fancy_title: '测试主题：AI 接管 VS Code 插件调试流程',
+      posts_count: 12,
+      views: 230,
+      created_at: '2026-03-08T20:00:00.000Z',
+      post_stream: {
+        posts: [
+          {
+            id: 1001,
+            username: 'Hex4C59',
+            post_number: 1,
+            cooked: '<p>这是一条用于自动化测试的帖子内容。</p>',
+            created_at: '2026-03-08T20:00:00.000Z',
+          },
+        ],
+      },
+    },
+  };
+}

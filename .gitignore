@@ -1,5 +1,33 @@
-node_modules
-out
-.vscode-test
+# dependencies
+node_modules/
+
+# build outputs
+out/
+out-test/
 *.vsix
+
+# ui test artifacts
+.extest/
+.vscode-test/
+
+# logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# environment / local files
 .DS_Store
+.env
+.env.*
+!.env.example
+
+# editor
+.vscode/*.code-workspace
+
+# temporary files
+*.tmp
+*.temp
+*.swp
+*.swo

@@ -1,0 +1,12 @@
+{
+  "workbench.startupEditor": "none",
+  "window.titleBarStyle": "native",
+  "window.commandCenter": false,
+  "window.dialogStyle": "native",
+  "window.restoreFullscreen": false,
+  "window.newWindowDimensions": "default",
+  "security.workspace.trust.enabled": false,
+  "files.simpleDialog.enable": true,
+  "terminal.integrated.copyOnSelection": true,
+  "workbench.secondarySideBar.defaultVisibility": "hidden"
+}

@@ -143,8 +143,8 @@ npm run compile
 
 - 点击“使用 Linux DO Connect 登录”后，会打开系统默认浏览器的授权页。
 - 完成授权并跳回 VS Code 后，扩展能自动识别当前用户。
-- 若 Linux.do 论坛接口接受 Connect access token，扩展能显示未读通知并允许回复。
-- 若论坛接口尚不接受 Connect access token，可先退回 `User API Key` 或 `Session Cookie` 模式继续验证其余能力。
+- 首次用 Linux DO Connect 登录后，扩展会先以匿名模式继续展示公开论坛内容，避免因 Bearer token 未验证而把公开内容也拦掉。
+- 只有当扩展确认 Linux.do 论坛接口确实接受 Connect access token 后，才会自动开启通知 / 回复等登录态能力。
 - 清除连接后，会话信息被移除，界面恢复匿名状态。
 
 ## 项目结构

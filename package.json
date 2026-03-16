@@ -27,8 +27,20 @@
         "title": "Linux.do: 使用 Linux DO Connect 登录"
       },
       {
+        "command": "linuxdo.browserLoginAndImportSession",
+        "title": "Linux.do: 浏览器登录并接管会话"
+      },
+      {
+        "command": "linuxdo.loginWithCookie",
+        "title": "Linux.do: 使用 Linux.do Cookie 登录"
+      },
+      {
         "command": "linuxdo.clearConnection",
         "title": "Linux.do: 清除连接"
+      },
+      {
+        "command": "linuxdo.__test.setScenario",
+        "title": "Linux.do: 设置测试场景"
       }
     ],
     "viewsContainers": {
@@ -62,14 +74,24 @@
           "group": "navigation@2"
         },
         {
-          "command": "linuxdo.loginWithBrowser",
+          "command": "linuxdo.browserLoginAndImportSession",
           "when": "view == linuxdo.mainView",
           "group": "navigation@3"
         },
         {
-          "command": "linuxdo.clearConnection",
+          "command": "linuxdo.loginWithBrowser",
           "when": "view == linuxdo.mainView",
           "group": "navigation@4"
+        },
+        {
+          "command": "linuxdo.loginWithCookie",
+          "when": "view == linuxdo.mainView",
+          "group": "navigation@5"
+        },
+        {
+          "command": "linuxdo.clearConnection",
+          "when": "view == linuxdo.mainView",
+          "group": "navigation@6"
         }
       ]
     },
@@ -92,12 +114,20 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
+    "compile:ui-test": "tsc -p ./tsconfig.ui-test.json",
     "watch": "tsc -watch -p ./",
+    "ui-test": "npm run compile && npm run compile:ui-test && extest setup-and-run --code_version 1.109.5 --storage .extest --code_settings ./test/ui/test-settings.json --mocha_config ./test/ui/.mocharc.js ./out-test/test/ui/smoke.test.js",
     "vscode:prepublish": "npm run compile"
   },
   "devDependencies": {
+    "@types/chai": "^5.2.3",
+    "@types/mocha": "^10.0.10",
     "@types/node": "^24.5.2",
-    "@types/vscode": "^1.105.0",
-    "typescript": "^5.9.2"
+    "@types/vscode": "1.95.0",
+    "chai": "^6.2.2",
+    "mocha": "^11.7.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.2",
+    "vscode-extension-tester": "^8.22.1"
   }
 }
